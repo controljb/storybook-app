@@ -76,6 +76,8 @@ projects/
 ## Stopping the App
 
 ```bash
+podman stop storybook && podman rm storybook
+or in docker
 docker-compose down
 ```
 
