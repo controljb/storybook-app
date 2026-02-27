@@ -14,6 +14,11 @@ Turn your game screeshots into a children's book PDF and animated video.
 cd storybook-app
 
 # 2. Build and start
+#podman:
+podman build -t storybook-app .
+podman run -d --name storybook -p 8000:8000 storybook-app
+
+#or docker
 docker-compose up --build
 
 # 3. Open your browser
