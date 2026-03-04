@@ -235,8 +235,8 @@ def _build_helpers(client, proj: Path, manifest: dict, log):
         line_h = dummy.textbbox((0, 0), "Ag", font=best_font)[3] + 20
         total_h = line_h * len(best_lines)
 
-        # Centre text block in upper 55% of image
-        y_start = max(int(h * 0.05), (int(h * 0.55) - total_h) // 2)
+        # Pin text block near the top of the image
+        y_start = int(h * 0.04)
 
         # Rainbow palette cycling per line
         rainbow = [
@@ -494,11 +494,15 @@ def run_images(project_id: str, proj: Path, job_id: str, job_status: dict):
             all_chars = list(h["char_refs"].keys())
             prompt = (
                 f"{h['consistency_rules'](all_chars)} "
-                f"{h['no_text_block']()} "
+                "ABSOLUTE TEXT BAN FOR THIS IMAGE: Do NOT paint, write, engrave, "
+                "stamp, or render ANY letters, words, numbers, or title text anywhere "
+                "in this image. No title, no subtitle, no author name, no decorative "
+                "lettering, no signs, no banners. The image must contain ZERO readable "
+                "characters. Text will be added separately in post-processing. "
                 "If a base image is provided, preserve its composition as the scene plate. "
                 "Insert characters naturally with correct perspective and shadows. "
-                f"Create a warm children's book cover: {title_desc}. "
-                f"{h['global_style']} Do NOT include any text in the illustration."
+                f"Create a warm children's book cover illustration: {title_desc}. "
+                f"{h['global_style']}"
             )
             resp = h["grok_image"](prompt, refs[:MAX_INPUT_IMAGES])
             h["download"](resp.url, title_img_path)
@@ -573,10 +577,14 @@ def run_regen_page(project_id: str, proj: Path, job_id: str,
             all_chars = list(h["char_refs"].keys())
             prompt = (
                 f"{h['consistency_rules'](all_chars)} "
-                f"{h['no_text_block']()} "
+                "ABSOLUTE TEXT BAN FOR THIS IMAGE: Do NOT paint, write, engrave, "
+                "stamp, or render ANY letters, words, numbers, or title text anywhere "
+                "in this image. No title, no subtitle, no author name, no decorative "
+                "lettering, no signs, no banners. The image must contain ZERO readable "
+                "characters. Text will be added separately in post-processing. "
                 "Insert characters naturally with correct perspective and shadows. "
-                f"Create a warm children's book cover: {title_desc}. "
-                f"{h['global_style']} Do NOT include any text."
+                f"Create a warm children's book cover illustration: {title_desc}. "
+                f"{h['global_style']}"
             )
             log("Regenerating title page...", 10)
             resp = h["grok_image"](prompt, refs[:MAX_INPUT_IMAGES])

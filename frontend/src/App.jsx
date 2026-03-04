@@ -431,7 +431,7 @@ export default function App() {
         drawing_mode:        drawingMode,
         global_style_prompt: stylePrompt,
         title: {
-          raw_description: `${bookTitle} — an adventure begins`,
+          raw_description: `A children's book cover scene — no title text or words in the image`,
           title_text:      bookTitle,
           ...(titleBase ? { base_image: titleBase } : {}),
         },

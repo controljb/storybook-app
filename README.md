@@ -2,7 +2,7 @@
 title: Storybook Generator
 emoji: 📖
 colorFrom: yellow
-colorTo: gray
+colorTo: orange
 sdk: docker
 pinned: false
 ---
