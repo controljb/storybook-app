@@ -38,10 +38,12 @@ GROK_RETRY_SLEEP  = 2
 def _build_helpers(client, proj: Path, manifest: dict, log):
     assets     = manifest.get("assets", {})
     char_descs = manifest.get("character_descriptions", {})
-    theme      = manifest.get("theme", "light")
+    theme        = manifest.get("theme", "light")
+    drawing_mode = manifest.get("drawing_mode", False)
+    art_style    = manifest.get("art_style", "")
 
     global_style = manifest.get("global_style_prompt",
-                                "Warm, nostalgic Minecraft pixelated blocky style.")
+                                "Warm, colorful children's book illustration style.")
     if theme == "dark":
         global_style += (
             " Dark, moody cinematic lighting. Deep shadows, cool blue and purple tones,"
@@ -112,22 +114,39 @@ def _build_helpers(client, proj: Path, manifest: dict, log):
         )
 
     def consistency_rules(requested: List[str]) -> str:
-        rules = [
-            "ABSOLUTE CONSISTENCY RULES: Do NOT change clothing colors. "
-            "Do NOT add hats, armor, backpacks, or accessories not in the reference images. "
-            "Do NOT change faces, ages, or body shapes. No duplicate characters or animals."
-        ]
+        # Drawing mode: interpret sketch features rather than lock photo-realistic appearance
+        if drawing_mode:
+            rules = [
+                "DRAWING REFERENCE RULES: The reference images are hand-drawn sketches by a child. "
+                "Use the drawing's shapes, colors, and design as the character's defining features. "
+                "Bring each drawn character to life faithfully — preserve their unique drawn design, "
+                "color choices, and personality. Keep characters consistent across all pages. "
+                "Do NOT add accessories or features not visible in the drawing."
+            ]
+        else:
+            rules = [
+                "CRITICAL CHARACTER CONSISTENCY — THIS IS THE MOST IMPORTANT RULE: "
+                "Every character MUST look IDENTICAL to their reference image on every single page. "
+                "NEVER change clothing colors under any circumstances. "
+                "NEVER change hair color, hair style, skin tone, or facial features. "
+                "NEVER change body proportions or age. "
+                "NEVER add hats, armor, accessories, or items not in the reference. "
+                "If a character wears a red shirt in the reference, they wear a red shirt on EVERY page. "
+                "No exceptions. Treat character appearance as locked and immutable."
+            ]
+        # Per-character description locks
         for cid in requested:
             d = char_descs.get(cid)
             if d:
-                rules.append(d)
-        if "boots" in requested:
-            rules.append(
-                "BOOTS LOCK: Include EXACTLY ONE cat (Boots). "
-                "Match the Boots reference EXACTLY. Do NOT change fur color. Do NOT add a second cat."
-            )
-        else:
-            rules.append("IMPORTANT: Do NOT include any cats or pets on this page.")
+                rules.append(f"CHARACTER '{cid.upper()}' LOCK: {d}")
+        if not drawing_mode:
+            if "boots" in requested:
+                rules.append(
+                    "BOOTS LOCK: Include EXACTLY ONE cat (Boots). "
+                    "Match the Boots reference EXACTLY. Do NOT change fur color. Do NOT add a second cat."
+                )
+            else:
+                rules.append("IMPORTANT: Do NOT include any cats or pets on this page.")
         return " ".join(rules)
 
     def pick_location(text: str) -> Optional[str]:
@@ -158,36 +177,166 @@ def _build_helpers(client, proj: Path, manifest: dict, log):
             lines.append(" ".join(cur))
         return "\n".join(lines)
 
+    def render_title(img_path: Path, title_text: str):
+        """Whimsical title: big bold outlined text, no box, rainbow stroke, centred."""
+        import math
+        # Also normalise title page to portrait
+        TARGET_W, TARGET_H = 768, 1024
+        base = Image.open(img_path).convert("RGBA")
+        if base.size != (TARGET_W, TARGET_H):
+            base = base.resize((TARGET_W, TARGET_H), Image.LANCZOS)
+        w, h = base.size
+
+        # Pick biggest font that fits within 82% width
+        font_paths = [
+            "/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        ]
+        max_text_w = int(w * 0.82)
+        words      = title_text.split()
+
+        def wrap(draw, text, font, max_w):
+            words_ = text.split()
+            lines_, cur_ = [], []
+            for wd in words_:
+                cur_.append(wd)
+                if draw.textbbox((0,0)," ".join(cur_),font=font)[2] > max_w:
+                    cur_.pop()
+                    if cur_: lines_.append(" ".join(cur_))
+                    cur_ = [wd]
+            if cur_: lines_.append(" ".join(cur_))
+            return lines_
+
+        best_font  = None
+        best_lines = [title_text]
+        for font_size in range(int(w * 0.12), 30, -4):
+            for fp in font_paths:
+                try:
+                    f = ImageFont.truetype(fp, font_size)
+                    tmp = Image.new("RGBA", (w, h))
+                    d   = ImageDraw.Draw(tmp)
+                    ls  = wrap(d, title_text, f, max_text_w)
+                    # Accept if all lines fit and total height < 45% of image
+                    lh  = d.textbbox((0,0),"Ag",font=f)[3] + 16
+                    if ls and lh * len(ls) < h * 0.45:
+                        best_font  = f
+                        best_lines = ls
+                        break
+                except Exception:
+                    continue
+            if best_font:
+                break
+        if not best_font:
+            best_font  = ImageFont.load_default()
+            best_lines = [title_text]
+
+        dummy  = ImageDraw.Draw(Image.new("RGBA", (w, h)))
+        line_h = dummy.textbbox((0, 0), "Ag", font=best_font)[3] + 20
+        total_h = line_h * len(best_lines)
+
+        # Centre text block in upper 55% of image
+        y_start = max(int(h * 0.05), (int(h * 0.55) - total_h) // 2)
+
+        # Rainbow palette cycling per line
+        rainbow = [
+            (255, 80,  80,  255),   # coral red
+            (255, 180,  30, 255),   # sunny yellow
+            (80,  210,  80, 255),   # lime green
+            (60,  160, 255, 255),   # sky blue
+            (200,  80, 255, 255),   # purple
+            (255, 120, 200, 255),   # pink
+        ]
+
+        overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        draw    = ImageDraw.Draw(overlay)
+
+        for li, line in enumerate(best_lines):
+            bbox = draw.textbbox((0, 0), line, font=best_font)
+            lw   = bbox[2] - bbox[0]
+            x    = (w - lw) // 2
+            y    = y_start + li * line_h
+            color = rainbow[li % len(rainbow)]
+
+            # Thick black outline (draw text at offsets in all 8 directions)
+            outline_r = max(4, int(line_h * 0.09))
+            for dx in range(-outline_r, outline_r + 1, 2):
+                for dy in range(-outline_r, outline_r + 1, 2):
+                    if dx == 0 and dy == 0:
+                        continue
+                    draw.text((x + dx, y + dy), line, font=best_font,
+                               fill=(0, 0, 0, 220))
+
+            # Soft drop shadow
+            draw.text((x + 5, y + 6), line, font=best_font, fill=(0, 0, 0, 140))
+
+            # Main coloured text
+            draw.text((x, y), line, font=best_font, fill=color)
+
+        Image.alpha_composite(base, overlay).convert("RGB").save(img_path)
+
     def render_overlay(img_path: Path, text: str, position: str = "bottom"):
         base = Image.open(img_path).convert("RGBA")
+        # ── FIX 2: normalise every page to portrait 768×1024 before overlay ──
+        TARGET_W, TARGET_H = 768, 1024
+        base = base.resize((TARGET_W, TARGET_H), Image.LANCZOS)
         w, h = base.size
+
         overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
-        try:
-            font = ImageFont.truetype(
-                "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", 44)
-        except Exception:
-            font = ImageFont.load_default()
-        margin  = int(w * 0.05)
-        panel_h = int(h * 0.22)
-        if position == "top":
-            panel_top    = margin
-            panel_bottom = margin + panel_h
-        else:
-            panel_bottom = h - int(h * 0.015)
-            panel_top    = panel_bottom - panel_h
-        pl, pr = margin, w - margin
+        draw    = ImageDraw.Draw(overlay)
+
+        # Auto-shrink font until text fits comfortably
+        margin   = int(w * 0.05)
+        pl, pr   = margin, w - margin
+        max_text_w = (pr - pl) - 40
+        max_panel_h = int(h * 0.38)   # never more than 38% of image height
+        padding  = 18
+
+        font_size = 44
+        font      = None
+        font_path = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
+        while font_size >= 18:
+            try:
+                f = ImageFont.truetype(font_path, font_size)
+            except Exception:
+                f = ImageFont.load_default()
+            wrapped   = wrap_text(draw, text, f, max_text_w)
+            line_h    = draw.textbbox((0, 0), "Ag", font=f)[3] + 6
+            n_lines   = len(wrapped.split("\n"))
+            total_txt_h = n_lines * line_h + padding * 2
+            if total_txt_h <= max_panel_h:
+                font = f
+                break
+            font_size -= 3
+        if font is None:
+            font    = ImageFont.load_default()
+            wrapped = wrap_text(draw, text, font, max_text_w)
+
+        line_h      = draw.textbbox((0, 0), "Ag", font=font)[3] + 6
+        n_lines     = len(wrapped.split("\n"))
+        panel_h     = n_lines * line_h + padding * 2
+
+        # Always pin to bottom
+        panel_bottom = h - int(h * 0.012)
+        panel_top    = panel_bottom - panel_h
+
+        # Drop shadow then panel
         shadow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         ImageDraw.Draw(shadow).rounded_rectangle(
-            [(pl+6, panel_top+8), (pr+6, panel_bottom+8)], radius=28, fill=(0, 0, 0, 80))
-        shadow = shadow.filter(ImageFilter.GaussianBlur(6))
+            [(pl+5, panel_top+7), (pr+5, panel_bottom+7)],
+            radius=22, fill=(0, 0, 0, 90))
+        shadow  = shadow.filter(ImageFilter.GaussianBlur(6))
         overlay = Image.alpha_composite(shadow, overlay)
-        draw = ImageDraw.Draw(overlay)
+        draw    = ImageDraw.Draw(overlay)
         draw.rounded_rectangle(
             [(pl, panel_top), (pr, panel_bottom)],
-            radius=28, fill=panel_fill, outline=panel_outline, width=4)
-        wrapped = wrap_text(draw, text, font, (pr - pl) - 40)
-        draw.multiline_text((pl+20, panel_top+20), wrapped, font=font, fill=text_color)
+            radius=22, fill=panel_fill, outline=panel_outline, width=4)
+
+        # Render wrapped text
+        draw.multiline_text(
+            (pl + 20, panel_top + padding),
+            wrapped, font=font, fill=text_color, spacing=6)
+
         Image.alpha_composite(base, overlay).convert("RGB").save(img_path)
 
     # Pre-encode character refs
@@ -219,11 +368,19 @@ def _build_helpers(client, proj: Path, manifest: dict, log):
                     if u:
                         env_refs.append(u)
                         break
-            env_prompt = (
-                f"{no_text_block()} "
-                "Create ONLY the environment/background for a Minecraft children's book page. "
-                f"Do NOT include any characters or animals. Scene: {desc}. {global_style}"
-            )
+            if drawing_mode:
+                env_prompt = (
+                    f"{no_text_block()} "
+                    "Create a background/environment for a children's book page, "
+                    "in a hand-drawn illustrated style matching the reference drawings. "
+                    f"Do NOT include any characters or animals. Scene: {desc}. {global_style}"
+                )
+            else:
+                env_prompt = (
+                    f"{no_text_block()} "
+                    "Create ONLY the environment/background for a children's book page. "
+                    f"Do NOT include any characters or animals. Scene: {desc}. {global_style}"
+                )
             resp = grok_image(env_prompt, env_refs[:1] if env_refs else [])
             download(resp.url, env_path)
             base_image = str(env_path.relative_to(proj))
@@ -241,12 +398,20 @@ def _build_helpers(client, proj: Path, manifest: dict, log):
                 if len(refs) < MAX_INPUT_IMAGES and char_refs.get(cid):
                     refs.append(char_refs[cid])
 
-        scale_hint  = page.get("scale_hint", "")
-        plate_instr = (
-            "Use the FIRST input image as the scene plate. Preserve its camera angle and environment. "
-            "Insert characters naturally: feet on ground, correct perspective, shadows. "
-            "Characters must be normal human-sized relative to buildings. "
-        )
+        scale_hint   = page.get("scale_hint", "")
+        is_drawn_ref = page.get("is_drawing_ref", False)
+        if is_drawn_ref:
+            plate_instr = (
+                "The FIRST input image is a hand-drawn sketch of this scene. "
+                "Use it as a composition guide — preserve the layout, characters positions, and scene elements. "
+                "Bring the drawing to life in the chosen art style while staying faithful to the sketch's design. "
+            )
+        else:
+            plate_instr = (
+                "Use the FIRST input image as the scene plate. Preserve its camera angle and environment. "
+                "Insert characters naturally: feet on ground, correct perspective, shadows. "
+                "Characters must be normal human-sized relative to buildings. "
+            )
         if scale_hint:
             plate_instr += scale_hint
 
@@ -254,7 +419,7 @@ def _build_helpers(client, proj: Path, manifest: dict, log):
             f"{consistency_rules(requested)} "
             f"{no_text_block()} "
             f"{plate_instr} "
-            f"Minecraft-style children's book illustration: {desc}. "
+            f"Children's book illustration: {desc}. "
             f"{global_style} Do NOT include any text in the illustration."
         )
         resp = grok_image(prompt, refs[:MAX_INPUT_IMAGES])
@@ -268,6 +433,7 @@ def _build_helpers(client, proj: Path, manifest: dict, log):
         rewrite=rewrite,
         download=download,
         render_overlay=render_overlay,
+        render_title=render_title,
         char_refs=char_refs,
         global_style=global_style,
         build_page_image=build_page_image,
@@ -331,12 +497,12 @@ def run_images(project_id: str, proj: Path, job_id: str, job_status: dict):
                 f"{h['no_text_block']()} "
                 "If a base image is provided, preserve its composition as the scene plate. "
                 "Insert characters naturally with correct perspective and shadows. "
-                f"Create a warm Minecraft-style children's book cover: {title_desc}. "
+                f"Create a warm children's book cover: {title_desc}. "
                 f"{h['global_style']} Do NOT include any text in the illustration."
             )
             resp = h["grok_image"](prompt, refs[:MAX_INPUT_IMAGES])
             h["download"](resp.url, title_img_path)
-            h["render_overlay"](title_img_path, title_text, position="top")
+            h["render_title"](title_img_path, title_text)
             log("Title page done.", 15)
 
         # Content pages
@@ -383,6 +549,9 @@ def run_regen_page(project_id: str, proj: Path, job_id: str,
         h       = _build_helpers(client, proj, manifest, log)
         pages   = manifest.get("pages", [])
 
+        # Set img_path early so it's always defined
+        img_path = proj / "generated_images" / "title_page.png"
+
         if page_index == 0:
             # Regenerate title page
             title_cfg  = manifest.get("title", {})
@@ -406,14 +575,13 @@ def run_regen_page(project_id: str, proj: Path, job_id: str,
                 f"{h['consistency_rules'](all_chars)} "
                 f"{h['no_text_block']()} "
                 "Insert characters naturally with correct perspective and shadows. "
-                f"Create a warm Minecraft-style children's book cover: {title_desc}. "
+                f"Create a warm children's book cover: {title_desc}. "
                 f"{h['global_style']} Do NOT include any text."
             )
-            img_path = proj / "generated_images" / "title_page.png"
             log("Regenerating title page...", 10)
             resp = h["grok_image"](prompt, refs[:MAX_INPUT_IMAGES])
             h["download"](resp.url, img_path)
-            h["render_overlay"](img_path, title_text, position="top")
+            h["render_title"](img_path, title_text)
 
         else:
             pi   = page_index - 1
@@ -474,9 +642,15 @@ def run_finalize(project_id: str, proj: Path, job_id: str, job_status: dict):
             if p.exists():
                 image_paths.append(p)
 
-        # Build PDF
+        # Build PDF — normalise every page to portrait 768×1024
         log("Building PDF...", 10)
-        imgs = [Image.open(p) for p in image_paths]
+        TARGET_W, TARGET_H = 768, 1024
+        imgs = []
+        for p in image_paths:
+            img = Image.open(p).convert("RGB")
+            if img.size != (TARGET_W, TARGET_H):
+                img = img.resize((TARGET_W, TARGET_H), Image.LANCZOS)
+            imgs.append(img)
         if imgs:
             pdf_path = proj / "book_pdfs" / "story_book.pdf"
             imgs[0].save(str(pdf_path), "PDF", resolution=150.0,
